@@ -1,12 +1,12 @@
 use crate::{Request, Response};
 use async_channel::{Receiver, Sender};
-use async_lock::Lock;
 use completion_token::CompletionToken;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct State {
-    inner: Lock<Option<Response>>,
+    inner: Arc<Mutex<Option<Response>>>,
 
     tx: Sender<(Request, CompletionToken<Response>)>,
     rx: Receiver<(Request, CompletionToken<Response>)>,
@@ -28,14 +28,14 @@ impl State {
     pub fn new() -> Self {
         let (tx, rx) = async_channel::unbounded();
         Self {
-            inner: Lock::new(None),
+            inner: Arc::new(Mutex::new(None)),
             tx,
             rx,
         }
     }
 
     async fn set(&self, value: Response) {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().unwrap();
         *inner = Some(value);
     }
 
@@ -51,7 +51,7 @@ impl State {
 
             // Also Store the value of in the completion token
             // This wakes any callers to `token.await`
-            token.set(response.clone()).await;
+            token.set(response.clone());
         }
 
         Ok(())
@@ -74,7 +74,7 @@ impl State {
     }
 
     pub async fn get_response(&self) -> Result<Response, StateError> {
-        let mut inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().unwrap();
         match inner.take() {
             Some(response) => Ok(response),
             None => Err(StateError::GetResponseError),

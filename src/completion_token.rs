@@ -3,13 +3,12 @@ use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-
-use async_lock::Lock;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct CompletionToken<T> {
-    inner: Lock<Option<T>>,
-    waker: Lock<Option<Waker>>,
+    inner: Arc<Mutex<Option<T>>>,
+    waker: Arc<Mutex<Option<Waker>>>,
 }
 
 /// CompletionToken
@@ -19,7 +18,7 @@ pub struct CompletionToken<T> {
 ///
 ///     let async_token = token.clone();
 ///     task::spawn(move || {
-///         async_token.set(()).await;
+///         async_token.set(());
 ///     });
 ///
 ///     token.await;
@@ -27,23 +26,23 @@ pub struct CompletionToken<T> {
 impl<T> CompletionToken<T> {
     pub fn new() -> Self {
         CompletionToken {
-            inner: Lock::new(Option::<T>::None),
-            waker: Lock::new(None),
+            inner: Arc::new(Mutex::new(Option::<T>::None)),
+            waker: Arc::new(Mutex::new(Option::<Waker>::None)),
         }
     }
 
-    pub async fn set(&self, value: T) {
-        let mut inner = self.inner.lock().await;
+    pub fn set(&self, value: T) {
+        let mut inner = self.inner.lock().expect("set inner");
         *inner = Some(value);
-        self.wake().await;
+        self.wake();
     }
 
-    async fn wake(&self) {
-        let waker = self.waker.lock().await;
+    fn wake(&self) {
+        let waker = self.waker.lock().expect("wake waker");
 
         // If there is a waker, wake it
         if let Some(waker) = &*waker {
-            waker.clone().wake();
+            waker.wake_by_ref();
         }
     }
 }
@@ -57,19 +56,24 @@ impl<T> Default for CompletionToken<T> {
 impl<T> Future for CompletionToken<T> {
     type Output = T;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        // Calling .take() means that T does not need to be Clone.
-        let inner = self.inner.try_lock().map(|mut t| t.take());
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let inner = {
+            let mut inner = Mutex::lock(&mut self.inner).expect("poll inner mutex");
+            // Calling .take() means that T does not need to be Clone.
+            inner.take()
+        };
 
         // Test if the value has been set, this represents a completed future
-        match inner.flatten() {
-            // Future is incomplete, so register a waker
-            // Another task will need to call CompletionToken::wake()
-            // to trigger another poll() from the executor
+        match inner {
+            // Future is incomplete, so register or reuse a waker
             None => {
-                if let Some(mut waker) = self.waker.try_lock() {
-                    *waker = Some(cx.waker().clone());
-                }
+                let mut waker = Mutex::lock(&mut self.waker).expect("poll waker mutex");
+
+                // Set a new waker if None
+                waker.get_or_insert_with(|| cx.waker().clone());
+
+                // Another task will need to call CompletionToken::wake()
+                // to trigger another poll() from the executor
                 Poll::Pending
             }
 
@@ -81,8 +85,11 @@ impl<T> Future for CompletionToken<T> {
 
 impl<T: PartialEq> PartialEq for CompletionToken<T> {
     fn eq(&self, other: &Self) -> bool {
-        match (self.inner.try_lock(), other.inner.try_lock()) {
-            (Some(s), Some(o)) => *s == *o,
+        let this = &*self.inner.lock().expect("eq self inner");
+        let that = &*other.inner.lock().expect("eq other inner");
+
+        match (this, that) {
+            (Some(this), Some(that)) => this == that,
             _ => false,
         }
     }

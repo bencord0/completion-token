@@ -57,7 +57,7 @@ async fn test_completion_token() -> Result<(), Box<dyn Error>> {
     }
 
     // Set the value...
-    token.set("Hello World!").await;
+    token.set("Hello World!");
 
     // ... and let the token can now complete
     let result = token.timeout(Duration::from_secs(1)).await;
@@ -73,7 +73,7 @@ async fn test_cloned_completion_token() -> Result<(), Box<dyn Error>> {
     {
         // Set the value on the clone...
         let token = token.clone();
-        token.set("Hello World!").await;
+        token.set("Hello World!");
     }
 
     // ... and the original token can now complete
@@ -88,7 +88,7 @@ async fn test_threaded_token() -> Result<(), Box<dyn Error>> {
     let token = CompletionToken::<&str>::new();
 
     let thread_token = token.clone();
-    std::thread::spawn(move || futures::executor::block_on(thread_token.set("Hello World!")));
+    std::thread::spawn(move || thread_token.set("Hello World!"));
 
     let result = token.timeout(Duration::from_secs(1)).await;
 
@@ -101,7 +101,7 @@ async fn test_asyncstd_token() -> Result<(), Box<dyn Error>> {
     let token = CompletionToken::<&str>::new();
 
     let async_token = token.clone();
-    async_std::task::spawn(async move { async_token.set("Hello World!").await }).await;
+    async_std::task::spawn(async move { async_token.set("Hello World!") }).await;
 
     let result = token
         .timeout(Duration::from_secs(1))
@@ -117,7 +117,7 @@ async fn test_tokio_token() -> Result<(), Box<dyn Error>> {
     let token = CompletionToken::<&str>::new();
 
     let tokio_token = token.clone();
-    tokio::task::spawn(async move { tokio_token.set("Hello World!").await });
+    tokio::task::spawn(async move { tokio_token.set("Hello World!") });
 
     let result = token
         .timeout(Duration::from_secs(1))
@@ -135,7 +135,7 @@ async fn test_take_twice() -> Result<(), Box<dyn Error>> {
     let t1 = token.clone();
     let t2 = token.clone();
 
-    token.set("Hello").await;
+    token.set("Hello");
 
     assert_eq!(
         "Hello",
@@ -144,7 +144,7 @@ async fn test_take_twice() -> Result<(), Box<dyn Error>> {
             .expect("timeout 1 exceeded")
     );
 
-    token.set("World").await;
+    token.set("World");
     assert_eq!(
         "World",
         t2.timeout(Duration::from_secs(1))
@@ -159,8 +159,8 @@ async fn test_take_twice() -> Result<(), Box<dyn Error>> {
 async fn test_set_twice() -> Result<(), Box<dyn Error>> {
     let token = CompletionToken::<&str>::new();
 
-    token.set("Hello").await;
-    token.set("World").await;
+    token.set("Hello");
+    token.set("World");
 
     assert_eq!(
         "World",
