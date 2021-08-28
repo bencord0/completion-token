@@ -1,14 +1,21 @@
 use core::{
     future::Future,
+    mem,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug)]
+enum Token<T> {
+    New,
+    Pending(Waker),
+    Complete(T),
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionToken<T> {
-    inner: Arc<Mutex<Option<T>>>,
-    waker: Arc<Mutex<Option<Waker>>>,
+    inner: Arc<Mutex<Token<T>>>,
 }
 
 /// CompletionToken
@@ -26,23 +33,28 @@ pub struct CompletionToken<T> {
 impl<T> CompletionToken<T> {
     pub fn new() -> Self {
         CompletionToken {
-            inner: Arc::new(Mutex::new(Option::<T>::None)),
-            waker: Arc::new(Mutex::new(Option::<Waker>::None)),
+            inner: Arc::new(Mutex::new(Token::New)),
         }
     }
 
     pub fn set(&self, value: T) {
-        let mut inner = self.inner.lock().expect("set inner");
-        *inner = Some(value);
-        self.wake();
-    }
+        let inner = &mut *self.inner.lock().expect("set inner");
 
-    fn wake(&self) {
-        let waker = self.waker.lock().expect("wake waker");
+        let mut token = Token::Complete(value);
+        match inner {
+            Token::New => {
+                mem::swap(inner, &mut token);
+            }
+            Token::Pending(_waker) => {
+                mem::swap(inner, &mut token);
 
-        // If there is a waker, wake it
-        if let Some(waker) = &*waker {
-            waker.wake_by_ref();
+                if let Token::Pending(waker) = token {
+                    waker.wake();
+                }
+            }
+            Token::Complete(_old_value) => {
+                mem::swap(inner, &mut token);
+            }
         }
     }
 }
@@ -56,29 +68,40 @@ impl<T> Default for CompletionToken<T> {
 impl<T> Future for CompletionToken<T> {
     type Output = T;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let inner = {
-            let mut inner = Mutex::lock(&mut self.inner).expect("poll inner mutex");
-            // Calling .take() means that T does not need to be Clone.
-            inner.take()
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let inner = &mut *self.inner.lock().expect("poll inner");
 
-        // Test if the value has been set, this represents a completed future
         match inner {
-            // Future is incomplete, so register or reuse a waker
-            None => {
-                let mut waker = Mutex::lock(&mut self.waker).expect("poll waker mutex");
-
-                // Set a new waker if None
-                waker.get_or_insert_with(|| cx.waker().clone());
+            // Future is incomplete, so register a waker
+            Token::New => {
+                let mut token = Token::Pending(cx.waker().clone());
+                mem::swap(inner, &mut token);
 
                 // Another task will need to call CompletionToken::wake()
                 // to trigger another poll() from the executor
                 Poll::Pending
             }
 
+            // Future is already being polled
+            Token::Pending(_waker) => Poll::Pending,
+
             // The future has completed, take the value
-            Some(value) => Poll::Ready(value),
+            Token::Complete(_value) => {
+                // Reset to new
+                let mut token = Token::New;
+                mem::swap(inner, &mut token);
+
+                // We hold the lock on inner,
+                // and have already matched it as Complete.
+                if let Token::Complete(value) = token {
+                    Poll::Ready(value)
+                } else {
+                    // Rare if this occurs, possible race?
+                    let mut token = Token::Pending(cx.waker().clone());
+                    mem::swap(inner, &mut token);
+                    Poll::Pending
+                }
+            },
         }
     }
 }
@@ -89,7 +112,20 @@ impl<T: PartialEq> PartialEq for CompletionToken<T> {
         let that = &*other.inner.lock().expect("eq other inner");
 
         match (this, that) {
-            (Some(this), Some(that)) => this == that,
+            (Token::New, Token::New) => true,
+
+            // Compare pointers
+            (Token::Pending(_), Token::Pending(_)) => {
+                let thisp = Arc::as_ptr(&self.inner);
+                let thatp = Arc::as_ptr(&other.inner);
+
+                thisp == thatp
+            }
+
+            // Compare content
+            (Token::Complete(this), Token::Complete(that)) => this == that,
+
+            // Mixed states are false
             _ => false,
         }
     }
