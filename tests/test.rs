@@ -52,7 +52,7 @@ async fn test_completion_token() -> Result<(), Box<dyn Error>> {
     // None means we hit the timeout, token is not complete
     {
         let token = token.clone();
-        let result = token.timeout(Duration::from_secs(1)).await;
+        let result = token.timeout(Duration::from_millis(1)).await;
         assert!(result.is_none());
     }
 
